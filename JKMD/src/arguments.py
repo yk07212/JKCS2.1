@@ -145,6 +145,7 @@ def print_help():
     -dt <float>       time step [in fs, default = 1] 
     -ns,-steps <int>  number of steps [default = 1000]
     -dump <int>       dumping properties every <int> step [0 means no dump, default = 1]
+    -dumpdf <int>     dumping structures to dataframe every <int> step [default = -dump value]
     -save <int>       save every <int> step [default = -1 = no intermediate save]
 
   OTHER:
@@ -222,6 +223,7 @@ def arguments(argument_list = [], species_from_previous_run = [], charge_from_pr
     Qdt = 1    #timestep
     Qns = 1000 #number of steps
     Qdump = 1  #dump every
+    Qdumpdf = Qdump
     Qsave = -1
     Qtemp = 300
     Qmaxfails = 20
@@ -627,6 +629,13 @@ def arguments(argument_list = [], species_from_previous_run = [], charge_from_pr
     if last == "-dump":
       last = ""
       Qdump = int(i)
+      continue
+    if i == "-dumpdf":
+      last = "-dumpdf"
+      continue
+    if last == "-dumpdf":
+      last = ""
+      Qdumpdf = int(i)
       continue
     # SAVE
     if i == "-save":
