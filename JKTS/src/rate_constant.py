@@ -1,19 +1,9 @@
-import re
-
-def log2vib(molecule):
-    with open(molecule.log_file_path, 'r') as file:
-        content = file.read()
-        if molecule.program.lower() == "g16":
-            vibrations = re.findall(r"Frequencies --\s+(-?\d+\.\d+)", content)
-        elif molecule.program.lower() == "orca":
-            vibrations = []
-            vib = re.search(r'[-+]?\d*\.\d+\s*cm\*\*-1', content)
-            if vib:
-                vibration = float(vib.group().split()[0])
-                vibrations.append(vibration)
-        else:
-            return 'No vibrations found'
-    return vibrations
+from output import logger
+import os
+import runtime
+from results import record_rate, format_rate
+from metadata import load_metadata
+from classes import Molecule
 
 
 def eckart(SP_TS, SP_reactant, SP_product, imag, T=[298.15]):
@@ -106,20 +96,19 @@ def eckart(SP_TS, SP_reactant, SP_product, imag, T=[298.15]):
         kappa = G[0]
         return kappa
     except Exception as e:
-        print("Error in calculating the eckart tunneling. Returning tunneling coefficient 1")
+        logger.warning(f"Error calculating the Eckart tunneling ({e}). Returning tunneling coefficient 1")
         return 1
 
 
-def rate_constant(TS_conformers, reactant_conformers, product_conformers, T=298.15):
-    from numpy import exp, sum, float64, NaN
+def rate_constant(TS_conformers, reactant_conformers, product_conformers, T=298.15, symmetry=1):
+    from numpy import exp, sum
+    from results import RateResult
     k_b = 1.380649e-23
     h = 6.62607015e-34
     HtoJ = 43.597447222e-19
     Htokcalmol = 627.509
-    Na = 6.022e23
-    liters_to_cm3 = 1000
-    mol_per_liter = 1/(0.0821*T)
-    p_ref = (mol_per_liter*Na)/liters_to_cm3
+    P_ref = 101325  # Pa (1 atm); must match P in Molecule.partition_function() and G16's log Q
+    p_ref = P_ref / (k_b * T) / 1e6  # standard-state number density, molecules cm^-3
     kappa = 1
 
     if reactant_conformers and TS_conformers:
@@ -127,6 +116,31 @@ def rate_constant(TS_conformers, reactant_conformers, product_conformers, T=298.
         _radical_names = ('OH', 'OH_DLPNO', 'Cl', 'Cl_DLPNO', 'NO3', 'NO3_DLPNO')
         radical = next((mol for mol in reactant_conformers if mol.name in _radical_names), None)
         reactant_molecules = [mol for mol in reactant_conformers if mol.name not in _radical_names]
+
+        # Drop molecules whose energies never parsed (would crash the min() below)
+        dropped = [m.name for m in TS_conformers + reactant_molecules if m.zero_point_corrected is None]
+        if radical is not None and radical.zero_point_corrected is None:
+            dropped.append(radical.name)
+        if dropped:
+            logger.warning(f"Skipping molecules with missing ZPE/energy in rate step: {dropped}")
+        TS_conformers = [m for m in TS_conformers if m.zero_point_corrected is not None]
+        reactant_molecules = [m for m in reactant_molecules if m.zero_point_corrected is not None]
+        if not TS_conformers or not reactant_molecules or (radical is not None and radical.zero_point_corrected is None):
+            logger.error("Cannot compute rate constant - required TS/reactant/radical energies are missing.")
+            return RateResult(sigma=symmetry, T=T)
+
+        # Partition functions are stored at the 298.15 K parse-time default; recompute from
+        # stored spectroscopic data if the rate is requested at a different temperature.
+        if abs(T - 298.15) > 1e-9:
+            to_update = list(TS_conformers) + list(reactant_molecules)
+            if radical is not None:
+                to_update.append(radical)
+            for mol in to_update:
+                if mol.vibrational_frequencies and getattr(mol, 'rot_temps', None):
+                    try:
+                        mol.partition_function(T)
+                    except Exception as e:
+                        logger.warning(f"Could not recompute Q for {mol.name} at {T} K ({e}); using 298.15 K value")
 
         lowest_reactant = min(reactant_molecules, key=lambda molecule: molecule.zero_point_corrected)
         lowest_TS = min(TS_conformers, key=lambda molecule: molecule.zero_point_corrected)
@@ -142,15 +156,21 @@ def rate_constant(TS_conformers, reactant_conformers, product_conformers, T=298.
         else:
             sum_reactant_ZP_J = lowest_ZP_reactant_J
             lowest_ZP_reactant_kcalmol = lowest_reactant.zero_point_corrected * Htokcalmol
-            Q_reactant = sum([exp(-(lowest_ZP_reactant_J - (mol.zero_point_corrected * HtoJ)) / (k_b * T)) * mol.Q for mol in reactant_molecules])
+            Q_reactant = sum([exp(-((mol.zero_point_corrected - lowest_reactant.zero_point_corrected) * HtoJ) / (k_b * T)) * mol.Q for mol in reactant_molecules])
 
         Q_TS = sum([exp(-(mol.zero_point_corrected - lowest_TS.zero_point_corrected) * HtoJ / (k_b * T)) * mol.Q for mol in TS_conformers])
 
+        imag = None
         if product_conformers:
             # Identify the small product molecule (H2O or HCl)
             _product_names = ('H2O', 'H2O_DLPNO', 'HCl', 'HCl_DLPNO', 'HNO3', 'HNO3_DLPNO')
             product_small = next((mol for mol in product_conformers if mol.name in _product_names), None)
             product_molecules = [mol for mol in product_conformers if mol.name not in _product_names]
+
+            # Incomplete products -> fall back to no tunneling rather than crash
+            product_molecules = [mol for mol in product_molecules if mol.electronic_energy is not None]
+            if product_small is not None and product_small.electronic_energy is None:
+                product_small = None
 
             if product_molecules and product_small and radical:
                 lowest_product = min(product_molecules, key=lambda molecule: molecule.electronic_energy)
@@ -159,16 +179,46 @@ def rate_constant(TS_conformers, reactant_conformers, product_conformers, T=298.
                 lowest_EE_reactant_kcalmol = (lowest_reactant.electronic_energy + radical.electronic_energy) * Htokcalmol
 
                 imag = abs(lowest_TS.vibrational_frequencies[0])
-                kappa = eckart(lowest_EE_TS_kcalmol, lowest_EE_reactant_kcalmol, lowest_EE_product_kcalmol, imag)
+                kappa = eckart(lowest_EE_TS_kcalmol, lowest_EE_reactant_kcalmol, lowest_EE_product_kcalmol, imag, T=[T])
                 k = kappa * (k_b*T)/(h*p_ref) * (Q_TS/Q_reactant) * exp(-(lowest_ZP_TS_J - sum_reactant_ZP_J) / (k_b * T))
             else:
-                print("No product molecule (H2O/HCl) found. No tunneling correction will be calculated")
+                logger.warning("No small product molecule (H2O/HCl/HNO3) found. No tunneling correction will be calculated")
                 k = kappa * (k_b*T)/(h*p_ref) * (Q_TS/Q_reactant) * exp(-(lowest_ZP_TS_J - sum_reactant_ZP_J) / (k_b * T))
         else:
             k = kappa * (k_b*T)/(h*p_ref) * (Q_TS/Q_reactant) * exp(-(lowest_ZP_TS_J - sum_reactant_ZP_J) / (k_b * T))
 
-        print(f"Ea: {lowest_ZP_TS_kcalmol - lowest_ZP_reactant_kcalmol:.4f} kcal/mol  Q_TS: {Q_TS}  k: {k}")
-        return k, kappa
+        k *= symmetry  # σᵢ reaction-path degeneracy (k only, not κ)
 
-    from numpy import NaN
-    return NaN, NaN
+        Ea = lowest_ZP_TS_kcalmol - lowest_ZP_reactant_kcalmol
+        return RateResult(k=k, kappa=kappa, Ea=Ea, Q_TS=Q_TS, Q_reactant=Q_reactant, sigma=symmetry,
+                          n_ts=len(TS_conformers), n_reactant=len(reactant_molecules), imag=imag, T=T)
+
+    return RateResult(sigma=symmetry, T=T)
+
+
+def assemble_and_record_rate(TS_molecules):
+    # Locate the finished reactant/product pickles for this TS channel directory,
+    channel_name = os.path.basename(runtime.start_dir)
+    symmetry = read_reaction_path_degeneracy(runtime.start_dir)
+    reactant_pkl_name = channel_name.split("_")[0]
+    for rates_dir in (os.path.dirname(runtime.start_dir), runtime.start_dir):
+        reactant_pkl_path = os.path.join(rates_dir, f'reactants/Final_reactants_{reactant_pkl_name}.pkl')
+        product_pkl_path = os.path.join(rates_dir, f'products/Final_products_{channel_name}.pkl')
+        logger.info(f"Looking for reactant and product pickles: {reactant_pkl_path}, {product_pkl_path}")
+        if os.path.exists(reactant_pkl_path):
+            final_reactants = Molecule.load_molecules_from_pickle(reactant_pkl_path)
+            final_products = Molecule.load_molecules_from_pickle(product_pkl_path) if os.path.exists(product_pkl_path) else []
+            result = rate_constant(TS_molecules, final_reactants, final_products, T=runtime.args.T, symmetry=symmetry)
+            record_rate(rates_dir, channel_name, result, method=runtime.args.method)
+            logger.results(format_rate(result))
+            return True
+    logger.error(f"Could not find Final_reactants_{reactant_pkl_name}.pkl in ../reactants/ or ./reactants/")
+    return False
+
+
+def read_reaction_path_degeneracy(directory):
+    # σᵢ recorded per TS directory in .metadata by mkdir(); defaults to 1
+    try:
+        return int(load_metadata(directory).get('reaction_path_degeneracy', 1))
+    except (TypeError, ValueError):
+        return 1

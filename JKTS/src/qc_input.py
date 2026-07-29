@@ -1,6 +1,12 @@
 import os
+import sys
+from datetime import datetime
+
 import runtime
+import geometry
+from output import logger
 from ts_validation import is_aldehyde
+from metadata import update_metadata
 
 
 def crest_constrain(molecule, force_constant=1):
@@ -14,7 +20,7 @@ def crest_constrain(molecule, force_constant=1):
         abstractor_index = molecule.constrained_indexes['X']
 
         aldehyde, aldehyde_O = is_aldehyde(molecule, C_index, H_index)
-        CHO_angle = molecule.calculate_angle(molecule.coordinates[C_index-1], molecule.coordinates[H_index-1], molecule.coordinates[abstractor_index-1])
+        CHO_angle = geometry.calculate_angle(molecule.coordinates[C_index-1], molecule.coordinates[H_index-1], molecule.coordinates[abstractor_index-1])
 
         with open(molecule.directory + "/constrain.inp", "w") as f:
             f.write("$constrain\n")
@@ -38,20 +44,22 @@ def mkdir(molecule, crest_constrain_flag=True):
             os.makedirs(os.path.join(molecule.directory, "log_files"))
         if not os.path.exists(os.path.join(molecule.directory, "slurm_output")):
             os.makedirs(os.path.join(molecule.directory, "slurm_output"))
-    with open(molecule.directory + "/.method", "w") as f:
-        f.write(f"{runtime.args.method}")
-
+    fields = {
+        'molecule': molecule.name,
+        'reaction': 'Cl' if runtime.args.Cl else 'NO3' if runtime.args.NO3 else 'OH',
+        'method': runtime.args.method,
+        'basis_set': runtime.args.basis_set,
+        'program': runtime.QC_program,
+        'temperature': runtime.args.T,
+        'slurm': {'par': runtime.args.par, 'cpu': runtime.args.cpu, 'mem': runtime.args.mem, 'time': runtime.args.time},
+        'created': datetime.now().isoformat(timespec='seconds'),
+        'jkts_command': ' '.join(sys.argv[1:]),
+    }
     if crest_constrain_flag:
-        C_index = molecule.constrained_indexes['C']
-        H_index = molecule.constrained_indexes['H']
-        abstractor_index = molecule.constrained_indexes['X']
-        for path in [molecule.directory + "/.constrain", molecule.directory + "/log_files/.constrain"]:
-            with open(path, "w") as f:
-                f.write(f"C: {C_index}\n")
-                f.write(f"H: {H_index}\n")
-                f.write(f"X: {abstractor_index}\n")
-                if 'XH' in molecule.constrained_indexes:
-                    f.write(f"XH: {molecule.constrained_indexes['XH']}\n")
+        # Active-site indices and σᵢ (conformers are rebuilt fresh downstream)
+        fields['constrained_indexes'] = molecule.constrained_indexes
+        fields['reaction_path_degeneracy'] = getattr(molecule, 'reaction_path_degeneracy', 1)
+    update_metadata(molecule.directory, **fields)
 
 
 def QC_input(molecule, constrain, TS, method=None, basis_set=None):
@@ -66,8 +74,8 @@ def QC_input(molecule, constrain, TS, method=None, basis_set=None):
     aldehyde = False
 
     method = method or molecule.method
-    if method == 'wb97xd' and runtime.QC_program.lower() == 'orca':
-        method = 'wb97x-d3bj'
+    if method.lower() == 'wb97xd' and molecule.program.lower() == 'orca':
+        method = 'wB97X-D3BJ'
 
     if not 'ccsd' in method:
         runtime.DFT_method = method
@@ -177,4 +185,4 @@ def QC_input(molecule, constrain, TS, method=None, basis_set=None):
                         f.write(f"D {C_index} {H_index} {abstractor_index} {XH_index} F\n")
                 f.write("\n")
     else:
-        print(f"QC_input was called but no program was specified for {molecule.name}")
+        logger.warning(f"QC_input was called but no program was specified for {molecule.name}")

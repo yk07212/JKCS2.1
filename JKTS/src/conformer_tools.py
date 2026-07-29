@@ -1,12 +1,12 @@
 import os
 import re
-from copy import deepcopy
 
 from classes import Molecule
+from output import logger
 import runtime
 
 
-def filter_molecules(molecules, logger=None, pickle=False, RMSD_threshold=0.34, Energy_threshold=1e-4, Dipole_threshold=1e-1):
+def filter_molecules(molecules, pickle=False, RMSD_threshold=0.34, Energy_threshold=1e-4, Dipole_threshold=1e-1):
     from ArbAlign import compare
     initial_len = len(molecules)
     unique_molecules = []
@@ -42,11 +42,6 @@ def filter_molecules(molecules, logger=None, pickle=False, RMSD_threshold=0.34, 
             else:
                 dipole_check = True
 
-            if not logger:
-                m_num = re.search(r'conf(\d+)', molecule.name).group(1)
-                r_num = re.search(r'conf(\d+)', reference.name).group(1)
-                print(f"R: conf{r_num:<3}  M: conf{m_num:<3} RMSD: {rmsd_value:.4f} E_diff: {energy_difference:.3e} D_diff: {dipole_difference:.3e} Identical: {all(i for i in [rmsd_check, energy_check, dipole_check])}")
-
             if rmsd_check and energy_check and dipole_check:
                 if molecule.electronic_energy <= reference.electronic_energy:
                     unique_molecules.pop()
@@ -57,10 +52,8 @@ def filter_molecules(molecules, logger=None, pickle=False, RMSD_threshold=0.34, 
 
         molecules = non_similar_molecules
 
-    if logger:
-        logger.log(f"Filtered {initial_len} conformers to {len(unique_molecules)} conformers using RMSD threshold: {RMSD_threshold}, Energy difference threshold: {Energy_threshold} Hartree, and Dipole moment difference threshold: {Dipole_threshold} Debye")
-    else:
-        print(f"Filtered {initial_len} conformers to {len(unique_molecules)} conformers using RMSD threshold: {RMSD_threshold} Energy difference threshold: {Energy_threshold} Hartree Dipole moment difference threshold: {Dipole_threshold} Debye")
+    logger.event(f"Filtered {initial_len} conformers down to {len(unique_molecules)} "
+                              f"(thresholds: RMSD {RMSD_threshold}, dE {Energy_threshold} Hartree, dDipole {Dipole_threshold} Debye)")
 
     if pickle:
         Molecule.molecules_to_pickle(unique_molecules, os.path.join(runtime.start_dir, "filtered_molecules.pkl"))
@@ -81,7 +74,7 @@ def initiate_conformers(input_file=None):
     conformer_molecules = []
 
     if not input_file:
-        print("No input file specified.")
+        logger.error("No input file specified.")
         return []
 
     with open(input_file, 'rb') as f:

@@ -1,35 +1,46 @@
 import re
 import runtime
+import geometry
+from output import logger
 
 
 def extract_normal_coordinates(molecule):
-    '''Return format: [[0.02, -0.02, 0.06], [0.07, -0.11, -0.02], ...]'''
-    if molecule.program.lower() == 'g16':
-        with open(molecule.log_file_path, 'r') as file:
-            lines = file.readlines()
+    if molecule.program.lower() != 'g16':
+        logger.warning("extract_normal_coordinates() was called, but only works for G16 log files")
+        return
 
-        negative_freq_found = False
-        read_xyz = False
-        xyz_coordinates = []
-        for line in lines:
-            if "Frequencies --" in line and '-' in line:
-                negative_freq_found = True
-                continue
-            if negative_freq_found and not read_xyz:
-                if "Atom  AN      X      Y      Z" in line:
-                    read_xyz = True
-                continue
-            if read_xyz:
-                match = re.match(r'\s*\d+\s+\d+\s+(-?\d+\.\d+\s+)*', line)
-                if match:
-                    xyz = re.findall(r'-?\d+\.\d+', line)[:3]
-                    xyz = [float(coord) for coord in xyz]
-                    xyz_coordinates.append(xyz)
-                else:
-                    break
-        return xyz_coordinates[:-1]
-    else:
-        print("extract_normal_coordinates() was called, but only works for G16 log files")
+    with open(molecule.log_file_path, 'r') as file:
+        lines = file.readlines()
+
+    # A retry-path log can contain the frequency spectrum more than once. Keep the
+    # imaginary mode of the *last* section so this stays consistent with the
+    # frequencies kept by update_energy (which also keeps the last 3N-6 block);
+    # the imaginary mode is always the first column of a section's opening
+    # "Frequencies --" line, so it is the last line whose first value is negative.
+    last_block = []
+    current_block = []
+    read_xyz = False
+    collecting = False
+    for line in lines:
+        if "Frequencies --" in line:
+            freqs = re.findall(r'-?\d+\.\d+', line)
+            collecting = bool(freqs) and float(freqs[0]) < 0
+            read_xyz = False
+            current_block = []
+            continue
+        if collecting and not read_xyz:
+            if "Atom  AN      X      Y      Z" in line:
+                read_xyz = True
+            continue
+        if read_xyz:
+            if re.match(r'\s*\d+\s+\d+\s+-?\d+\.\d+', line):
+                xyz = [float(coord) for coord in re.findall(r'-?\d+\.\d+', line)[:3]]
+                current_block.append(xyz)
+            else:
+                last_block = current_block
+                read_xyz = False
+                collecting = False
+    return last_block
 
 
 def is_aldehyde(molecule, C_index, H_index):
@@ -114,33 +125,37 @@ def good_active_site(molecule, aldehyde=False):
         angle_threshold_low, angle_threshold_high = 130, 180
     elif aldehyde:
         CH_threshold_low, CH_threshold_high = 1.05, 1.4
-        HX_threshold_low, HX_threshold_high = 1.5, 2.0
+        HX_threshold_low, HX_threshold_high = 1.5, 2.1
         CX_threshold_low, CX_threshold_high = 2.4, 3.2
-        angle_threshold_low, angle_threshold_high = 135, 170
+        angle_threshold_low, angle_threshold_high = 120, 170
     else:
         CH_threshold_low, CH_threshold_high = 1.05, 1.4
         HX_threshold_low, HX_threshold_high = 1.2, 1.7
         CX_threshold_low, CX_threshold_high = 2.2, 2.8
         angle_threshold_low, angle_threshold_high = 135, 180
 
-    distance_CH = molecule.atom_distance(molecule.coordinates[C_index], molecule.coordinates[H_index])
-    distance_HX = molecule.atom_distance(molecule.coordinates[H_index], molecule.coordinates[abstractor_index])
-    distance_CX = molecule.atom_distance(molecule.coordinates[C_index], molecule.coordinates[abstractor_index])
-    angle_CHX = molecule.calculate_angle(molecule.coordinates[C_index], molecule.coordinates[H_index], molecule.coordinates[abstractor_index])
-    print(distance_CH, distance_HX, distance_CX, angle_CHX)
+    distance_CH = geometry.atom_distance(molecule.coordinates[C_index], molecule.coordinates[H_index])
+    distance_HX = geometry.atom_distance(molecule.coordinates[H_index], molecule.coordinates[abstractor_index])
+    distance_CX = geometry.atom_distance(molecule.coordinates[C_index], molecule.coordinates[abstractor_index])
+    angle_CHX = geometry.calculate_angle(molecule.coordinates[C_index], molecule.coordinates[H_index], molecule.coordinates[abstractor_index])
 
-    if (CH_threshold_low <= distance_CH <= CH_threshold_high and
-        HX_threshold_low <= distance_HX <= HX_threshold_high and
-        CX_threshold_low <= distance_CX <= CX_threshold_high and
-        angle_threshold_low <= angle_CHX <= angle_threshold_high):
-        return True
-    return False
+    failures = []
+    if not CH_threshold_low <= distance_CH <= CH_threshold_high:
+        failures.append(f"C-H distance {distance_CH:.2f} A outside [{CH_threshold_low}, {CH_threshold_high}]")
+    if not HX_threshold_low <= distance_HX <= HX_threshold_high:
+        failures.append(f"H-X distance {distance_HX:.2f} A outside [{HX_threshold_low}, {HX_threshold_high}]")
+    if not CX_threshold_low <= distance_CX <= CX_threshold_high:
+        failures.append(f"C-X distance {distance_CX:.2f} A outside [{CX_threshold_low}, {CX_threshold_high}]")
+    if not angle_threshold_low <= angle_CHX <= angle_threshold_high:
+        failures.append(f"C-H-X angle {angle_CHX:.1f} deg outside [{angle_threshold_low}, {angle_threshold_high}]")
+
+    return (not failures), failures
 
 
 def check_transition_state(molecule, threshold=0.5):
     from numpy import array
     from numpy.linalg import norm
-    freq_cutoff = -abs(runtime.args.freq_cutoff) if runtime.args.freq_cutoff else -80
+    freq_cutoff = -abs(runtime.args.freq_cutoff)
     aldehyde_TS = False
     msg = 'error'
     try:
@@ -159,7 +174,7 @@ def check_transition_state(molecule, threshold=0.5):
             aldehyde_TS = True
             threshold = 0.3
 
-    good_TS = good_active_site(molecule, aldehyde=aldehyde_TS)
+    good_TS, geometry_failures = good_active_site(molecule, aldehyde=aldehyde_TS)
 
     sorted_freqs = sorted((freq for freq in molecule.vibrational_frequencies))
     if sorted_freqs:
@@ -176,7 +191,7 @@ def check_transition_state(molecule, threshold=0.5):
         normal_coords = extract_normal_coordinates(molecule)
 
         if len(normal_coords) != len(molecule.coordinates):
-            print("Error: The number of normal mode displacements does not match the number of atoms in the molecule.")
+            logger.error(f"{molecule.name}: number of normal mode displacements does not match the number of atoms.")
             return False, ""
 
         displaced_coordinates_plus = [array(original) + array(displacement) for original, displacement in zip(molecule.coordinates, normal_coords)]
@@ -199,9 +214,14 @@ def check_transition_state(molecule, threshold=0.5):
         combined_values_plus = relative_change_CH_plus + relative_change_HX_plus
         combined_values_minus = relative_change_CH_minus + relative_change_HX_minus
 
-        if any(value > threshold for value in [combined_values_plus, combined_values_minus, combined_values_plus_minus, combined_values_minus_plus]) and good_TS:
-            msg = f"Yay! Normal mode analysis indicate correct TS for {molecule.name} with imaginary frequency: {imag}"
+        normal_mode_ok = any(value > threshold for value in [combined_values_plus, combined_values_minus, combined_values_plus_minus, combined_values_minus_plus])
+
+        if normal_mode_ok and good_TS:
+            msg = f"Normal mode analysis confirms correct TS for {molecule.name} (imaginary frequency: {imag:.1f} cm**-1)"
             return True, msg
+        elif normal_mode_ok and not good_TS:
+            msg = f"Normal mode analysis for {molecule.name} is consistent with a TS, but the active-site geometry is out of range: {'; '.join(geometry_failures)}."
+            return False, msg
         else:
             if imag < freq_cutoff:
                 msg = f"Change in bond length for {molecule.name} does not meet threshold."
@@ -212,8 +232,9 @@ def check_transition_state(molecule, threshold=0.5):
     elif molecule.program.lower() == 'orca':
         with open(molecule.log_file_path, 'r') as f:
             content = f.read()
-        if normal_mode_displacement_significant(content) and good_active_site(molecule):
-            msg = f"Yay! Normal mode analysis indicate correct TS for {molecule.name} with imaginary frequency: {imag}"
+        orca_good_TS, geometry_failures = good_active_site(molecule, aldehyde=aldehyde_TS)
+        if normal_mode_displacement_significant(content) and orca_good_TS:
+            msg = f"Normal mode analysis confirms correct TS for {molecule.name} (imaginary frequency: {imag:.1f} cm**-1)"
             return True, msg
         else:
             if imag < freq_cutoff:
