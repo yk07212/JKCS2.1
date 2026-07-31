@@ -1,4 +1,4 @@
-def print_properties(species , timestep = 1, interval = 1, Qconstraints = 0, Qdistance = 0, split = None, fail = False, QINFOfile_basename = "str", QINFOcluster_type = "", QINFOcomponents = [], QINFOcomponent_ratio = [], heavyatoms = 0):
+def print_properties(species , timestep = 1, interval = 1, Qconstraints = 0, Qdistance = 0, split = None, fail = False, QINFOfile_basename = "str", QINFOcluster_type = "", QINFOcomponents = [], QINFOcomponent_ratio = [], heavyatoms = 0, print_flag = True):
   from ase.md.velocitydistribution import Stationary
   from ase.md.velocitydistribution import ZeroRotation
   from ase import units
@@ -61,13 +61,15 @@ def print_properties(species , timestep = 1, interval = 1, Qconstraints = 0, Qdi
   else:
     T_vib = 0
   if Qconstraints > 0 or Qdistance > 0:
-    if current_step == 0:
+    if print_flag and current_step == 0:
       print('      STEP_[-] TIME_[fs] | Et[kcal/mol] Ep[kcal/mol] Ek[kcal/mol] | T_[K] Tt[K] Tr[K] Tv[K] | COMd_[A] MaxA_[A] MaxB_[A]', flush=True)
-    print('JKMD: %-*i %-*.1f | %-*.3f %-*.3f %-*.3f | %-*.0f %-*.0f %-*.0f %-*.0f | %-8.4f %-8.2f %-8.2f' % (8,current_step, 9,current_time, 12,epot + ekin, 12,epot, 12,ekin, 5,T_temp, 5,T_tr, 5,T_rot, 5,T_vib, dist_n, spread_a, spread_b), flush=True)
+    if print_flag:
+      print('JKMD: %-*i %-*.1f | %-*.3f %-*.3f %-*.3f | %-*.0f %-*.0f %-*.0f %-*.0f | %-8.4f %-8.2f %-8.2f' % (8,current_step, 9,current_time, 12,epot + ekin, 12,epot, 12,ekin, 5,T_temp, 5,T_tr, 5,T_rot, 5,T_vib, dist_n, spread_a, spread_b), flush=True)
   else:
-    if current_step == 0:
+    if print_flag and current_step == 0:
       print('      STEP_[-] TIME_[fs] | Et[kcal/mol] Ep[kcal/mol] Ek[kcal/mol] | T_[K] Tt[K] Tr[K] Tv[K]', flush=True)
-    print('JKMD: %-*i %-*.1f | %-*.3f %-*.3f %-*.3f | %-*.0f %-*.0f %-*.0f %-*.0f' % (8,current_step, 9,current_time, 12,epot + ekin, 12,epot, 12,ekin, 5,T_temp, 5,T_tr, 5,T_rot, 5,T_vib), flush=True)
+    if print_flag:
+      print('JKMD: %-*i %-*.1f | %-*.3f %-*.3f %-*.3f | %-*.0f %-*.0f %-*.0f %-*.0f' % (8,current_step, 9,current_time, 12,epot + ekin, 12,epot, 12,ekin, 5,T_temp, 5,T_tr, 5,T_rot, 5,T_vib), flush=True)
 
 
   from os import path

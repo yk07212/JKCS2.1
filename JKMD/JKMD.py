@@ -8,6 +8,7 @@ from os import system
 
 import os
 import psutil
+import math
 #os.system("if ! command -v module &> /dev/null; then source /com/bin/modules.sh; fi; module load intel; module load openmpi;")
 #os.system("if ! command -v module &> /dev/null; then source /com/bin/modules.sh; fi; module load gcc openmpi mkl")
 #os.environ['OMP_STACKSIZE'] = '4G'
@@ -279,28 +280,48 @@ while not Qfollow_activated == 0:
   else:
     if "cluster_dic" not in globals(): #current_step == 0:
       cluster_dic = {}
+  if Qdump == 0:
+    print_properties(species = all_species, timestep = Qdt, interval = 0, Qconstraints = Qconstraints, Qdistance = Qdistance, split = Qlenfirst, fail = False, QINFOfile_basename = QINFOfile_basename, QINFOcluster_type = QINFOcluster_type, QINFOcomponents = QINFOcomponents, QINFOcomponent_ratio = QINFOcomponent_ratio, heavyatoms = Qheavyatoms, print_flag = True)
+  if Qdumpdf == 0:
+    toupdate, current_time, current_step = print_properties(species = all_species, timestep = Qdt, interval = 0, Qconstraints = Qconstraints, Qdistance = Qdistance, split = Qlenfirst, fail = False, QINFOfile_basename = QINFOfile_basename, QINFOcluster_type = QINFOcluster_type, QINFOcomponents = QINFOcomponents, QINFOcomponent_ratio = QINFOcomponent_ratio, heavyatoms = Qheavyatoms, print_flag = False)
+    if Qsavepickle:
+      cluster_dic = mergeDictionary(cluster_dic, toupdate)
   def save(fail = False):
     global current_time,current_step
     if Qconstraints == 4 and len(species) == 2:
       global cluster_dic1,cluster_dic2
-      toupdate1,current_time,current_step = print_properties(species = species[0], timestep = 0, interval = 0, Qconstraints = Qconstraints, Qdistance = Qdistance, split = Qlenfirst, fail = fail, QINFOfile_basename = QINFOfile_basename, QINFOcluster_type = QINFOcluster_type, QINFOcomponents = QINFOcomponents, QINFOcomponent_ratio = QINFOcomponent_ratio, heavyatoms = Qheavyatoms)
-      toupdate2,current_time,current_step = print_properties(species = species[1], timestep = Qdt, interval = Qdump, Qconstraints = Qconstraints, Qdistance = Qdistance, split = Qlenfirst, fail = fail, QINFOfile_basename = QINFOfile_basename, QINFOcluster_type = QINFOcluster_type, QINFOcomponents = QINFOcomponents, QINFOcomponent_ratio = QINFOcomponent_ratio, heavyatoms = Qheavyatoms)
+      toupdate1,current_time,current_step = print_properties(species = species[0], timestep = 0, interval = 0, Qconstraints = Qconstraints, Qdistance = Qdistance, split = Qlenfirst, fail = fail, QINFOfile_basename = QINFOfile_basename, QINFOcluster_type = QINFOcluster_type, QINFOcomponents = QINFOcomponents, QINFOcomponent_ratio = QINFOcomponent_ratio, heavyatoms = Qheavyatoms, print_flag = True)
+      toupdate2,current_time,current_step = print_properties(species = species[1], timestep = Qdt, interval = Qdump, Qconstraints = Qconstraints, Qdistance = Qdistance, split = Qlenfirst, fail = fail, QINFOfile_basename = QINFOfile_basename, QINFOcluster_type = QINFOcluster_type, QINFOcomponents = QINFOcomponents, QINFOcomponent_ratio = QINFOcomponent_ratio, heavyatoms = Qheavyatoms, print_flag = True)
     else:
       global cluster_dic
-      toupdate,current_time,current_step = print_properties(species = all_species, timestep = Qdt, interval = Qdump, Qconstraints = Qconstraints, Qdistance = Qdistance, split = Qlenfirst, fail = fail, QINFOfile_basename = QINFOfile_basename, QINFOcluster_type = QINFOcluster_type, QINFOcomponents = QINFOcomponents, QINFOcomponent_ratio = QINFOcomponent_ratio, heavyatoms =Qheavyatoms)
-    if Qsavepickle == 1:
-      if Qconstraints == 4 and len(species) == 2:
-        toupdate1.update({("log","method"):[" ".join(argv[1:])],("log","program"):["Python"]})
-        toupdate2.update({("log","method"):[" ".join(argv[1:])],("log","program"):["Python"]})
+      should_print = fail
+      if Qdump == 0:
+        should_print = True
+      elif (current_step % Qdump) == 0:
+        should_print = True
+      should_save_df = fail and Qsavepickle
+      if Qdumpdf == 0:
+        should_save_df = True
+      elif (current_step % Qdumpdf) == 0:
+        should_save_df = True
+      if should_print or should_save_df:
+        interval = 0 if Qdump == 0 else Qdump
+        toupdate,current_time,current_step = print_properties(species = all_species, timestep = Qdt, interval = interval, Qconstraints = Qconstraints, Qdistance = Qdistance, split = Qlenfirst, fail = fail, QINFOfile_basename = QINFOfile_basename, QINFOcluster_type = QINFOcluster_type, QINFOcomponents = QINFOcomponents, QINFOcomponent_ratio = QINFOcomponent_ratio, heavyatoms =Qheavyatoms, print_flag = should_print)
+        if should_save_df and Qsavepickle:
+          toupdate.update({("log","method"):[" ".join(argv[1:])],("log","program"):["Python"]})
+          if Qconstraints == 3:
+            toupdate.update({("log","k_bias"):[min(current_step/max(Qslow,0.0000001),1)*Qk_bias],("log","harm_distance"):[Qharm]})
+          cluster_dic = mergeDictionary(cluster_dic, toupdate)
       else:
-        toupdate.update({("log","method"):[" ".join(argv[1:])],("log","program"):["Python"]})
-        if Qconstraints == 3:
-          toupdate.update({("log","k_bias"):[min(current_step/max(Qslow,0.0000001),1)*Qk_bias],("log","harm_distance"):[Qharm]})
-      if Qconstraints == 4 and len(species) == 2:
-        cluster_dic1 = mergeDictionary(cluster_dic1, toupdate1)
-        cluster_dic2 = mergeDictionary(cluster_dic2, toupdate2)
-      else:
-        cluster_dic = mergeDictionary(cluster_dic, toupdate)
+        interval = 0 if Qdump == 0 else Qdump
+        current_time += interval * Qdt
+        current_step += interval
+  if Qsavepickle == 1:
+    if Qconstraints == 4 and len(species) == 2:
+      toupdate1.update({("log","method"):[" ".join(argv[1:])],("log","program"):["Python"]})
+      toupdate2.update({("log","method"):[" ".join(argv[1:])],("log","program"):["Python"]})
+      cluster_dic1 = mergeDictionary(cluster_dic1, toupdate1)
+      cluster_dic2 = mergeDictionary(cluster_dic2, toupdate2)
   if Qdump == 0:
     save()
   else:
